@@ -134,7 +134,7 @@ def _do_decode(args):
 
         if ts:
             try:
-                timestamp = float(ts.group(1))
+                timestamp = ts.group(1)
             except ValueError:
                 timestamp = 0
         else:
