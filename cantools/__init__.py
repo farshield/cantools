@@ -16,7 +16,7 @@ __version__ = '16.2.0'
 RE_CANDUMP = re.compile(r'^.*  ([0-9A-F]+)   \[\d+\]\s*([0-9A-F ]*)$')
 
 # (1378.006329)  can0   0B2   [8]  F9 0D 04 0E 0A 0E 11 0E
-RE_TIMESTAMP = re.compile(r'\((.*)\)')
+RE_TIMESTAMP = re.compile(r'\s*\((.*)\)')
 
 # signal database
 signal_db = {}
@@ -134,7 +134,7 @@ def _do_decode(args):
 
         if ts:
             try:
-                timestamp = ts.group(1)
+                timestamp = int(float(ts.group(1)) * 1000)
             except ValueError:
                 timestamp = 0
         else:
