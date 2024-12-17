@@ -12,6 +12,8 @@ __version__ = '16.2.0'
 # Matches 'candump' output, i.e. "vcan0  1F0   [8]  00 00 00 00 00 00 1B C1".
 RE_CANDUMP = re.compile(r'^.*  ([0-9A-F]+)   \[\d+\]\s*([0-9A-F ]*)$')
 
+# (1378.006329)  can0   0B2   [8]  F9 0D 04 0E 0A 0E 11 0E
+RE_TIMESTAMP = re.compile(r'\((.*)\)')
 
 def _mo_unpack(mo):
     frame_id = mo.group(1)
@@ -25,14 +27,14 @@ def _mo_unpack(mo):
     return frame_id, data
 
 
-def _format_message(dbf, frame_id, data, decode_choices):
+def _format_message(dbf, frame_id, data, decode_choices, perform_scaling, display_units):
     try:
         message = dbf.get_message_by_frame_id(frame_id)
     except KeyError:
         return 'Unknown frame id {}'.format(frame_id)
 
     try:
-        decoded_signals = message.decode(data, decode_choices)
+        decoded_signals = message.decode(data, decode_choices, perform_scaling)
     except ValueError as e:
         return str(e)
 
@@ -51,7 +53,7 @@ def _format_message(dbf, frame_id, data, decode_choices):
             '{}: {}{}'.format(signal.name,
                                value,
                               ''
-                              if signal.unit is None
+                              if signal.unit is None or not display_units
                               else ' ' + signal.unit))
 
     return '{}({})'.format(message.name,
@@ -61,6 +63,14 @@ def _format_message(dbf, frame_id, data, decode_choices):
 def _do_decode(args):
     dbf = db.load_file(args.dbfile)
     decode_choices = not args.no_decode_choices
+    perform_scaling = not args.no_scaling
+    display_units = not args.no_units
+    minimal = args.minimal
+
+    if minimal:
+        decode_choices = False
+        perform_scaling = False
+        display_units = False
 
     while True:
         line = sys.stdin.readline()
@@ -71,14 +81,22 @@ def _do_decode(args):
 
         line = line.strip('\r\n')
         mo = RE_CANDUMP.match(line)
+        ts = RE_TIMESTAMP.match(line)
+
+        if ts:
+            timestamp = ts.group(1)
 
         if mo:
             frame_id, data = _mo_unpack(mo)
+            if minimal:
+                line = "{}".format(timestamp)
             line += ' :: '
             line += _format_message(dbf,
                                     frame_id,
                                     data,
-                                    decode_choices)
+                                    decode_choices,
+                                    perform_scaling,
+                                    display_units)
 
         print(line)
 
@@ -106,6 +124,15 @@ def _main():
     decode_parser.add_argument('-c', '--no-decode-choices',
                                action='store_true',
                                help='Do not convert scaled values to choice strings.')
+    decode_parser.add_argument('-s', '--no-scaling',
+                               action='store_true',
+                               help='Do not scale data.')
+    decode_parser.add_argument('-u', '--no-units',
+                               action='store_true',
+                               help='Do not display units.')
+    decode_parser.add_argument('-m', '--minimal',
+                               action='store_true',
+                               help='Do not scale, decode or display units.')
     decode_parser.add_argument('dbfile', help='Database file (.dbc).')
     decode_parser.set_defaults(func=_do_decode)
 
