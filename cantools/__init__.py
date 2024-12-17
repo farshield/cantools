@@ -1,9 +1,11 @@
 import sys
+import os
 import argparse
 import re
 import binascii
 import struct
 import json
+import shutil
 from . import db
 
 __author__ = 'Erik Moqvist'
@@ -15,6 +17,10 @@ RE_CANDUMP = re.compile(r'^.*  ([0-9A-F]+)   \[\d+\]\s*([0-9A-F ]*)$')
 
 # (1378.006329)  can0   0B2   [8]  F9 0D 04 0E 0A 0E 11 0E
 RE_TIMESTAMP = re.compile(r'\((.*)\)')
+
+# signal database
+signal_db = {}
+
 
 def _mo_unpack(mo):
     frame_id = mo.group(1)
@@ -62,17 +68,60 @@ def _format_message_json(dbf, frame_id, data):
     return {"id": frame_id, "name": message.name, "signals": formatted_signals}
 
 
+def _signal_to_file(output_folder, timestamp, message_name, signals):
+    # make message directories
+    message_dir = os.path.join(output_folder, message_name)
+    if not os.path.exists(message_dir):
+        os.mkdir(message_dir)
+
+    for signal in signals:
+        if signal['name'] not in signal_db:
+            signal_path = os.path.join(message_dir, signal['name'] + '.csv')
+            if not os.path.exists(signal_path):
+                with open(signal_path, "w") as sig_file:
+                    sig_file.write("timestamp;raw_value;computed_value\n")
+            signal_db[signal['name']] = {'message': message_name, 'values':[]}
+        
+        signal_db[signal['name']]['values'].append([timestamp, signal['raw_value'], signal['computed_value']])
+
+        if len(signal_db[signal['name']]['values']) >= 512:
+            signal_path = os.path.join(message_dir, signal['name'] + '.csv')
+            with open(signal_path, "a") as sig_file:
+                for sig in signal_db[signal['name']]['values']:
+                    sig_file.write("{};{};{}\n".format(sig[0], sig[1], sig[2]))
+            signal_db[signal['name']] = {'message': message_name, 'values':[]}
+
+
+def _signal_flush(output_folder):
+    for signal_name in signal_db:
+        message_dir = os.path.join(output_folder, signal_db[signal_name]['message'])
+        signal_path = os.path.join(message_dir, signal_name + '.csv')
+        with open(signal_path, "a") as sig_file:
+            for sig in signal_db[signal_name]['values']:
+                sig_file.write("{};{};{}\n".format(sig[0], sig[1], sig[2]))
+
+
 def _do_decode(args):
     dbf = db.load_file(args.dbfile)
     timestamp_only = args.timestamp_only
-
+    silent_output = args.silent
+    if args.output:
+        output_folder = args.output[0]
+        # re-create output folder
+        if os.path.isdir(output_folder):
+            shutil.rmtree(output_folder)
+        os.makedirs(output_folder)
+    else:
+        output_folder = None
+    
     first = True
-    print('[')
     while True:
         line = sys.stdin.readline()
 
         # Break at EOF.
         if not line:
+            if output_folder:
+                _signal_flush(output_folder)
             break
 
         line = line.strip('\r\n')
@@ -104,12 +153,23 @@ def _do_decode(args):
                 "message": formatted_message
             }
 
-        if first:
-            print("{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
-            first = False
-        else:
-            print(",{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
-    print(']')
+        if not silent_output:
+            if first:
+                print("[{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
+                first = False
+            else:
+                print(",{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
+        
+        if output_folder and "name" in frame_dictionary["message"]:
+            _signal_to_file(
+                output_folder,
+                timestamp,
+                frame_dictionary["message"]["name"],
+                frame_dictionary["message"]["signals"]
+            )
+
+    if not silent_output:
+        print(']')
 
 
 def _main():
@@ -135,6 +195,12 @@ def _main():
     decode_parser.add_argument('-t', '--timestamp-only',
                                action='store_true',
                                help='Display only timestamp in header.')
+    decode_parser.add_argument('-s', '--silent',
+                               action='store_true',
+                               help='Do not display JSON output.')
+    decode_parser.add_argument('-o', '--output',
+                               nargs='+',
+                               help='Output folder for signal .csv files.')
     decode_parser.add_argument('dbfile', help='Database file (.dbc).')
     decode_parser.set_defaults(func=_do_decode)
 
