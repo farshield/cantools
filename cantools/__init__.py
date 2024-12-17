@@ -3,6 +3,7 @@ import argparse
 import re
 import binascii
 import struct
+import json
 from . import db
 
 __author__ = 'Erik Moqvist'
@@ -27,14 +28,15 @@ def _mo_unpack(mo):
     return frame_id, data
 
 
-def _format_message(dbf, frame_id, data, decode_choices, perform_scaling, display_units):
+def _format_message_json(dbf, frame_id, data):
     try:
         message = dbf.get_message_by_frame_id(frame_id)
     except KeyError:
         return 'Unknown frame id {}'.format(frame_id)
 
     try:
-        decoded_signals = message.decode(data, decode_choices, perform_scaling)
+        decoded_signals_raw = message.decode(data, decode_choices=False, scaling=False)
+        decoded_signals = message.decode(data, decode_choices=True, scaling=True)
     except ValueError as e:
         return str(e)
 
@@ -42,36 +44,30 @@ def _format_message(dbf, frame_id, data, decode_choices, perform_scaling, displa
 
     for signal in message.signals:
         try:
+            value_raw = decoded_signals_raw[signal.name]
             value = decoded_signals[signal.name]
         except KeyError:
             continue
 
-        if isinstance(value, str):
-            value = "'{}'".format(value)
+        signal_dictionary = {
+            "name": signal.name,
+            "raw_value": value_raw,
+            "computed_value": value
+        }
+        if signal.unit:
+            signal_dictionary["unit"] = signal.unit
 
-        formatted_signals.append(
-            '{}: {}{}'.format(signal.name,
-                               value,
-                              ''
-                              if signal.unit is None or not display_units
-                              else ' ' + signal.unit))
+        formatted_signals.append(signal_dictionary)
 
-    return '{}({})'.format(message.name,
-                           ', '.join(formatted_signals))
+    return {"id": frame_id, "name": message.name, "signals": formatted_signals}
 
 
 def _do_decode(args):
     dbf = db.load_file(args.dbfile)
-    decode_choices = not args.no_decode_choices
-    perform_scaling = not args.no_scaling
-    display_units = not args.no_units
-    minimal = args.minimal
+    timestamp_only = args.timestamp_only
 
-    if minimal:
-        decode_choices = False
-        perform_scaling = False
-        display_units = False
-
+    first = True
+    print('[')
     while True:
         line = sys.stdin.readline()
 
@@ -80,25 +76,40 @@ def _do_decode(args):
             break
 
         line = line.strip('\r\n')
+        frame_dictionary = {
+            "timestamp": line,
+            "message": None
+        }
         mo = RE_CANDUMP.match(line)
         ts = RE_TIMESTAMP.match(line)
 
         if ts:
-            timestamp = ts.group(1)
+            try:
+                timestamp = float(ts.group(1))
+            except ValueError:
+                timestamp = 0
+        else:
+            timestamp = 0
 
         if mo:
             frame_id, data = _mo_unpack(mo)
-            if minimal:
-                line = "({})".format(timestamp)
-            line += ' :: '
-            line += _format_message(dbf,
-                                    frame_id,
-                                    data,
-                                    decode_choices,
-                                    perform_scaling,
-                                    display_units)
+            formatted_message = _format_message_json(
+                dbf,
+                frame_id,
+                data
+            )
+            
+            frame_dictionary = {
+                "timestamp": timestamp if timestamp_only else line,
+                "message": formatted_message
+            }
 
-        print(line)
+        if first:
+            print("{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
+            first = False
+        else:
+            print(",{}".format(json.dumps(frame_dictionary, ensure_ascii=False)))
+    print(']')
 
 
 def _main():
@@ -121,18 +132,9 @@ def _main():
         'decode',
         description=('Decode "candump" CAN frames read from standard input '
                      'and print them in a human readable format.'))
-    decode_parser.add_argument('-c', '--no-decode-choices',
+    decode_parser.add_argument('-t', '--timestamp-only',
                                action='store_true',
-                               help='Do not convert scaled values to choice strings.')
-    decode_parser.add_argument('-s', '--no-scaling',
-                               action='store_true',
-                               help='Do not scale data.')
-    decode_parser.add_argument('-u', '--no-units',
-                               action='store_true',
-                               help='Do not display units.')
-    decode_parser.add_argument('-m', '--minimal',
-                               action='store_true',
-                               help='Do not scale, decode or display units.')
+                               help='Display only timestamp in header.')
     decode_parser.add_argument('dbfile', help='Database file (.dbc).')
     decode_parser.set_defaults(func=_do_decode)
 
