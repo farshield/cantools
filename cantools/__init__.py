@@ -89,7 +89,7 @@ def _do_decode(args):
         if mo:
             frame_id, data = _mo_unpack(mo)
             if minimal:
-                line = "{}".format(timestamp)
+                line = "({})".format(timestamp)
             line += ' :: '
             line += _format_message(dbf,
                                     frame_id,
